@@ -18,9 +18,10 @@
     self.beaconManager = [[ESTBeaconManager alloc] init];
     self.beaconManager.delegate = self;
     self.beaconManager.avoidUnknownStateBeacons = YES;
+    [self.beaconManager requestAlwaysAuthorization];
 
     // create sample region object (you can additionaly pass major / minor values)
-    self.currentRegion = [[ESTBeaconRegion alloc] initRegionWithIdentifier:@"EstimoteSampleRegion"];
+    //self.currentRegion = [[ESTBeaconRegion alloc] initRegionWithIdentifier:@"EstimoteSampleRegion"];
 
     // region watchers
     self.regionWatchers = [[NSMutableDictionary alloc] init];
@@ -58,6 +59,7 @@
 - (void)startMonitoringForRegion:(CDVInvokedUrlCommand*)command
 {
     NSString* regionid = [command.arguments objectAtIndex:0];
+    NSUUID* identifier = [[NSUUID alloc] initWithUUIDString:regionid];
     id major = [command.arguments objectAtIndex:1];
     id minor = [command.arguments objectAtIndex:2];
 
@@ -67,12 +69,12 @@
         ESTBeaconRegion* region;
 
         if((NSNull *)major == [NSNull null] || (NSNull *)minor == [NSNull null]) {
-            region = [[ESTBeaconRegion alloc] initRegionWithIdentifier:regionid];
+            region = [[ESTBeaconRegion alloc] initWithProximityUUID:identifier identifier:regionid];
         } else {
-            region = [[ESTBeaconRegion alloc] initRegionWithMajor:[major intValue] minor:[minor intValue] identifier:regionid];
+            region = [[ESTBeaconRegion alloc] initWithProximityUUID:identifier major:(CLBeaconMajorValue)major minor:(CLBeaconMinorValue)minor identifier:regionid];
         }
 
-        region.notifyEntryStateOnDisplay = [command.arguments objectAtIndex:3];
+        region.notifyEntryStateOnDisplay = (bool)[command.arguments objectAtIndex:3];
 
         [self.beaconManager startMonitoringForRegion:region];
         [self.beaconManager requestStateForRegion:region];
@@ -188,8 +190,9 @@
     NSInteger major = [[command.arguments objectAtIndex:0] intValue];
     NSInteger minor = [[command.arguments objectAtIndex:1] intValue];
     NSString* beaconid = [command.arguments objectAtIndex:2];
-
-    [self.beaconManager startAdvertisingWithMajor:major withMinor:minor withIdentifier:beaconid];
+    NSUUID* identifier = [[NSUUID alloc] initWithUUIDString:beaconid];
+    
+    [self.beaconManager startAdvertisingWithProximityUUID:identifier major:(CLBeaconMajorValue)major minor:(CLBeaconMinorValue)minor identifier:beaconid];
 
     [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_OK] callbackId:command.callbackId];
 }
@@ -235,7 +238,7 @@
     }
 
     if(foundBeacon) {
-        if([foundBeacon isConnected]) {
+        if([foundBeacon connectionStatus] == ESTBeaconConnectionStatusConnected) {
             //beacon is already connected
             [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Beacon is already connected."] callbackId:command.callbackId];
         } else if(self.connectionCallbackId != nil) {
@@ -246,7 +249,7 @@
             self.connectionCallbackId = command.callbackId;
             self.connectedBeacon = foundBeacon;
             foundBeacon.delegate = self;
-            [foundBeacon connectToBeacon];
+            [foundBeacon connect];
         }
     } else {
         [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Beacon not found."] callbackId:command.callbackId];
@@ -276,7 +279,7 @@
     }
 
     if(foundBeacon) {
-        if([foundBeacon isConnected]) {
+        if([foundBeacon connectionStatus] == ESTBeaconConnectionStatusConnected) {
             //beacon is already connected
             [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Beacon is already connected."] callbackId:command.callbackId];
         } else if(self.connectionCallbackId != nil) {
@@ -287,7 +290,7 @@
             self.connectionCallbackId = command.callbackId;
             self.connectedBeacon = foundBeacon;
             foundBeacon.delegate = self;
-            [foundBeacon connectToBeacon];
+            [foundBeacon connect];
         }
     } else {
         [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"Beacon not found."] callbackId:command.callbackId];
@@ -302,7 +305,7 @@
         CDVPluginResult* pluginResult = nil;
 
         if(self.connectedBeacon != nil) {
-            [self.connectedBeacon disconnectBeacon];
+            [self.connectedBeacon disconnect];
 
             pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK
                                          messageAsDictionary:[self beaconToDictionary:self.connectedBeacon]];
@@ -327,7 +330,7 @@
         if(advInterval != nil && [advInterval intValue] >= 80 && [advInterval intValue] <= 3200) {
 
 
-            [self.connectedBeacon writeBeaconAdvInterval:[advInterval shortValue] withCompletion:^(unsigned short value, NSError *error) {
+            [self.connectedBeacon writeAdvInterval:[advInterval shortValue] completion:^(unsigned short value, NSError *error) {
                 if(error != nil) {
                     [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:error.localizedDescription] callbackId:command.callbackId];
                 } else {
@@ -380,7 +383,7 @@
         }
 
         if(powerLevel || powerLevel == ESTBeaconPowerLevel7) {
-            [self.connectedBeacon writeBeaconPower:powerLevel withCompletion:^(ESTBeaconPower value, NSError *error) {
+            [self.connectedBeacon writePower:powerLevel completion:^(ESTBeaconPower value, NSError *error) {
                 if(error != nil) {
                     [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:error.localizedDescription] callbackId:command.callbackId];
                 } else {
@@ -399,13 +402,14 @@
 
 - (void)updateFirmwareOfConnectedBeacon:(CDVInvokedUrlCommand*)command
 {
-    if(self.connectedBeacon != nil) {
-        [self.connectedBeacon updateBeaconFirmwareWithProgress:^(NSString *value, NSError *error){
+    /*if(self.connectedBeacon != nil) {
+        [self.connectedBeacon updateFirmwareWithProgress:^(NSInteger *value, NSString *description, NSError *error){
             if(error == nil) {
                 self.firmwareUpdateProgress = value;
             }
+            return;
 
-        }andCompletion:^(NSError *error){
+        } completion:^(NSError *error){
             if(error == nil) {
                 [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_OK
                                                                      messageAsDictionary:[self beaconToDictionary:self.connectedBeacon]] callbackId:command.callbackId];
@@ -418,7 +422,7 @@
     } else {
         //no connected beacons
         [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"There are no connected beacons."] callbackId:command.callbackId];
-    }
+    }*/
 }
 
 - (void)getFirmwareUpdateProgress:(CDVInvokedUrlCommand*)command
@@ -461,7 +465,8 @@
     [props setValue:beacon.debugDescription forKey:@"debugDescription"];
     [props setValue:beacon.macAddress forKey:@"macAddress"];
     [props setValue:beacon.measuredPower forKey:@"measuredPower"];
-    [props setValue:[NSNumber numberWithBool:beacon.isConnected] forKey:@"isConnected"];
+    //[props setValue:[NSNumber numberWithBool:beacon.isConnected] forKey:@"isConnected"];
+    [props setValue:[NSNumber numberWithInt:beacon.connectionStatus] forKey:@"isConnected"];
 
     if(beacon.power != nil) {
         [props setValue:[NSNumber numberWithChar:[beacon.power charValue]] forKey:@"power"];
@@ -524,6 +529,7 @@
 }
 
 - (void)beaconManager:(ESTBeaconManager *)manager didDetermineState:(CLRegionState)state forRegion:(ESTBeaconRegion *)region {
+    NSLog(@"%d", state);
     NSString *result = nil;
 
     switch(state) {
